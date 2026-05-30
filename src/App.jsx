@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import './App.css';
 import { fetchWages } from './services/wageService';
 
 // --- 1. 模拟 Mock API ---
@@ -13,10 +14,21 @@ const formatDateKey = (year, month, day) => {
   return `${year}-${m}-${d}`;
 };
 
-// 读取指定 cookie 值的工具函数
-const getCookie = (key) => {
-  const match = document.cookie.match(new RegExp(`(?:^|; )${key}=([^;]*)`));
-  return match ? decodeURIComponent(match[1]) : null;
+const getCurrentMonthStart = () => {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), 1);
+};
+
+const WEEKDAY_LABELS = ['日', '一', '二', '三', '四', '五', '六'];
+
+const normalizeDateKey = (dateValue) => {
+  if (dateValue == null) return null;
+  const raw = String(dateValue);
+  const match = raw.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (!match) return null;
+  const normalizedMonth = String(Number(match[2])).padStart(2, '0');
+  const normalizedDay = String(Number(match[3])).padStart(2, '0');
+  return `${match[1]}-${normalizedMonth}-${normalizedDay}`;
 };
 
 const getQueryParam = (key) => {
@@ -29,8 +41,21 @@ const getQueryParam = (key) => {
 function App() {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState({ userName: '', records: [] });
-  // 默认查看2023年12月
-  const [currentDate, setCurrentDate] = useState(new Date(2025, 11, 1)); 
+  // 默认查看当前月
+  const [currentDate, setCurrentDate] = useState(getCurrentMonthStart);
+
+  useEffect(() => {
+    const resetToCurrentMonth = () => {
+      setCurrentDate(getCurrentMonthStart());
+    };
+
+    resetToCurrentMonth();
+    window.addEventListener('pageshow', resetToCurrentMonth);
+
+    return () => {
+      window.removeEventListener('pageshow', resetToCurrentMonth);
+    };
+  }, []);
 
   useEffect(() => {
     const userName = getQueryParam('name'); // 改为从 URL 获取
@@ -55,207 +80,159 @@ function App() {
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth(); 
 
-  const { daysArray, monthlyTotal } = useMemo(() => {
+  const { daysArray, monthlyTotal, mobileWeeks } = useMemo(() => {
     const daysInMonth = getDaysInMonth(year, month);
     const firstDay = getFirstDayOfMonth(year, month);
     
-    const wageMap = {}; 
+    const wageCentsMap = {};
     const shiftMap = {}; // 新增：记录班次
-    let total = 0;
+    const seenDateWageKeys = new Set();
     
     data.records.forEach(item => {
-      const wage = item.wage == null ? 0 : Number(item.wage) || 0;
-      wageMap[item.date] = wage;
-      shiftMap[item.date] = item.shift_type ?? ''; // 保存班次（可能为早班/晚班/中班等）
-      const [rYear, rMonth] = item.date.split('-').map(Number);
-      if (rYear === year && rMonth === month + 1) {
-        total += wage;
+      const normalizedDateKey = normalizeDateKey(item.date);
+      if (!normalizedDateKey) return;
+
+      const rawWage = item.wage ?? item.amount;
+      const parsedWage = rawWage == null ? 0 : Number(rawWage);
+      const wage = Number.isFinite(parsedWage) ? parsedWage : 0;
+      const wageCents = Math.round(wage * 100);
+      const dedupeKey = `${normalizedDateKey}|${wageCents}`;
+
+      if (seenDateWageKeys.has(dedupeKey)) return;
+      seenDateWageKeys.add(dedupeKey);
+
+      wageCentsMap[normalizedDateKey] = (wageCentsMap[normalizedDateKey] || 0) + wageCents;
+      if (!shiftMap[normalizedDateKey]) {
+        shiftMap[normalizedDateKey] = item.shift_type ?? item.shift ?? ''; // 保存班次（可能为早班/晚班/中班等）
       }
     });
 
     const blanks = Array(firstDay).fill(null);
+    let totalCents = 0;
     const days = Array.from({ length: daysInMonth }, (_, i) => {
       const day = i + 1;
       const dateKey = formatDateKey(year, month, day);
+      const dailyWageCents = wageCentsMap[dateKey] || 0;
+      totalCents += dailyWageCents;
+
       return {
         day,
         dateKey,
-        wage: wageMap[dateKey] || 0,
+        wage: dailyWageCents / 100,
         shift: shiftMap[dateKey] || '' // 带上班次
       };
     });
 
-    return { daysArray: [...blanks, ...days], monthlyTotal: total };
-  }, [currentDate, data]);
+    const calendarDays = [...blanks, ...days];
+    const paddedDays = [...calendarDays];
+
+    while (paddedDays.length % 7 !== 0) {
+      paddedDays.push(null);
+    }
+
+    const weeks = [];
+    for (let index = 0; index < paddedDays.length; index += 7) {
+      weeks.push(
+        paddedDays.slice(index, index + 7).map((entry, dayIndex) => (
+          entry
+            ? {
+                ...entry,
+                weekDayLabel: WEEKDAY_LABELS[dayIndex],
+              }
+            : null
+        ))
+      );
+    }
+
+    return {
+      daysArray: paddedDays,
+      monthlyTotal: totalCents / 100,
+      mobileWeeks: weeks,
+    };
+  }, [year, month, data.records]);
 
   const changeMonth = (offset) => {
-    const newDate = new Date(currentDate.setMonth(currentDate.getMonth() + offset));
-    setCurrentDate(new Date(newDate));
+    setCurrentDate((prevDate) => {
+      const nextYear = prevDate.getFullYear();
+      const nextMonth = prevDate.getMonth() + offset;
+      return new Date(nextYear, nextMonth, 1);
+    });
   };
 
-  if (loading) return <div style={styles.loading}>数据加载中...</div>;
+  if (loading) return <div className="app-loading">数据加载中...</div>;
 
   return (
-    <div style={styles.container}>
-      {/* 顶部：用户信息与汇总 */}
-      <div style={styles.headerCard}>
-        <h2 style={styles.userName}>{data.userName} 的工资单</h2>
-        <div style={styles.totalContainer}>
-          <span style={styles.totalLabel}>{year}年{month + 1}月 总收入</span>
-          <span style={styles.totalAmount}>¥ {monthlyTotal.toLocaleString()}</span>
+    <div className="app-shell">
+      <div className="summary-card">
+        <h1 className="summary-user">{data.userName} 的工资单</h1>
+        <div className="summary-total">
+          <span className="summary-label">{year}年{month + 1}月 总收入</span>
+          <span className="summary-amount">¥ {monthlyTotal.toLocaleString()}</span>
         </div>
       </div>
 
-      {/* 控制条：切换月份 */}
-      <div style={styles.controlBar}>
-        <button onClick={() => changeMonth(-1)} style={styles.navBtn}>&lt; 上月</button>
-        <span style={styles.currentDateDisplay}>{year}年 {month + 1}月</span>
-        <button onClick={() => changeMonth(1)} style={styles.navBtn}>下月 &gt;</button>
+      <div className="month-toolbar">
+        <button type="button" onClick={() => changeMonth(-1)} className="month-button">&lt; 上月</button>
+        <span className="month-title">{year}年 {month + 1}月</span>
+        <button type="button" onClick={() => changeMonth(1)} className="month-button">下月 &gt;</button>
       </div>
 
-      {/* 日历主体 */}
-      <div style={styles.calendar}>
-        <div style={styles.weekRow}>
-          {['日', '一', '二', '三', '四', '五', '六'].map(d => (
-            <div key={d} style={styles.weekCell}>{d}</div>
+      <section className="calendar-panel calendar-desktop" aria-label="桌面月历视图">
+        <div className="calendar-weekdays">
+          {WEEKDAY_LABELS.map((label) => (
+            <div key={label} className="calendar-weekday">{label}</div>
           ))}
         </div>
-        
-        <div style={styles.daysGrid}>
+
+        <div className="calendar-grid">
           {daysArray.map((item, index) => {
-            if (!item) return <div key={`blank-${index}`} style={styles.dayCellEmpty} />;
-            
+            if (!item) return <div key={`blank-${index}`} className="calendar-cell calendar-cell-empty" />;
+
             const hasWage = item.wage > 0;
             return (
-              <div key={item.day} style={styles.dayCell}>
-                <div style={styles.dayCellContent}>
-                  <span style={styles.dayNumber}>{item.day}</span>
-                  {/* 新增：显示班次 */}
-                  <span style={styles.shiftText}>{item.shift || '-'}</span>
-                  {hasWage ? (
-                    <span style={styles.wageAmount}>+{item.wage}</span>
-                  ) : (
-                    <span style={styles.noWage}>-</span>
-                  )}
-                </div>
-              </div>
+              <article key={item.day} className={`calendar-cell ${hasWage ? 'calendar-cell-active' : ''}`}>
+                <div className="calendar-date">{item.day}</div>
+                {item.shift ? <div className="calendar-shift">{item.shift}</div> : null}
+                {hasWage ? (
+                  <div className="calendar-wage">+{item.wage.toLocaleString()}</div>
+                ) : null}
+              </article>
             );
           })}
         </div>
-      </div>
+      </section>
+
+      <section className="calendar-panel calendar-mobile" aria-label="手机周视图">
+        {mobileWeeks.map((week, weekIndex) => {
+          const visibleDays = week.filter(Boolean);
+
+          return (
+            <div key={`week-${weekIndex}`} className="week-card">
+              <div className="week-card-title">第 {weekIndex + 1} 周</div>
+              <div className="week-list">
+                {visibleDays.map((item) => {
+                  const hasWage = item.wage > 0;
+
+                  return (
+                    <article key={item.dateKey} className="week-item">
+                      <div className="week-item-date">
+                        <span className="week-item-day">{item.day}日</span>
+                        <span className="week-item-weekday">周{item.weekDayLabel}</span>
+                      </div>
+                      <div className="week-item-main">
+                        {item.shift ? <span className="week-item-shift">{item.shift}</span> : <span className="week-item-shift week-item-shift-muted">未排班次</span>}
+                        {hasWage ? <span className="week-item-wage">¥ {item.wage.toLocaleString()}</span> : null}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </section>
     </div>
   );
 }
-
-// --- 4. 样式 ---
-const styles = {
-  container: {
-    width: '100%',
-    maxWidth: '100%', // 手机端占满宽度
-    margin: 0,
-    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
-    backgroundColor: '#f5f7fa',
-    minHeight: '100vh',
-    padding: '16px',
-    boxSizing: 'border-box',
-  },
-  loading: {
-    display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', color: '#666',
-  },
-  headerCard: {
-    background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
-    borderRadius: '16px', padding: '20px', color: 'white',
-    boxShadow: '0 4px 12px rgba(37, 99, 235, 0.2)', marginBottom: '20px',
-  },
-  userName: { margin: '0 0 10px 0', fontSize: '18px', fontWeight: 'normal', opacity: 0.9 },
-  totalContainer: { display: 'flex', flexDirection: 'column' },
-  totalLabel: { fontSize: '14px', opacity: 0.8, marginBottom: '4px' },
-  totalAmount: { fontSize: '32px', fontWeight: 'bold' },
-  controlBar: {
-    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-    marginBottom: '16px', padding: '0 8px',
-  },
-  navBtn: {
-    background: 'white', border: '1px solid #e5e7eb', borderRadius: '8px',
-    padding: '8px 16px', fontSize: '14px', color: '#374151', cursor: 'pointer',
-  },
-  currentDateDisplay: { fontSize: '18px', fontWeight: '600', color: '#1f2937' },
-  calendar: {
-    backgroundColor: 'white', borderRadius: '16px', padding: '16px',
-    boxShadow: '0 2px 8px rgba(0,0,0,0.05)',
-  },
-  weekRow: { 
-    display: 'grid', 
-    gridTemplateColumns: 'repeat(7, 1fr)', 
-    gap: '8px',  // 与 daysGrid 保持一致
-    marginBottom: '8px' 
-  },
-  weekCell: { 
-    textAlign: 'center', 
-    fontSize: '14px', 
-    color: '#9ca3af', 
-    paddingBottom: '8px',
-    boxSizing: 'border-box',
-  },
-  daysGrid: { display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '8px' },
-  dayCell: {
-    // 使用 padding-bottom 替代 aspectRatio 以兼容 iOS
-    position: 'relative',
-    width: '100%',
-    paddingBottom: '100%', // 创建 1:1 的正方形
-    backgroundColor: '#f9fafb',
-    borderRadius: '8px', 
-    border: '1px solid #f3f4f6',
-    boxSizing: 'border-box',
-  },
-  dayCellContent: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: '1px', // 统一控制行间距，非常紧凑
-    padding: '4px 2px', // 添加内边距防止内容贴边
-  },
-  dayCellEmpty: { 
-    width: '100%',
-    paddingBottom: '100%', // 与 dayCell 保持一致的比例
-  },
-  dayNumber: { 
-    fontSize: '14px', 
-    color: '#374151', 
-    fontWeight: '500', 
-    lineHeight: '1.2', // 减小行高
-    margin: 0, // 移除所有 margin
-    padding: 0,
-  },
-  wageAmount: { 
-    fontSize: '12px', 
-    color: '#10b981', 
-    fontWeight: '600',
-    lineHeight: '1.2', // 减小行高
-    margin: 0,
-    padding: 0,
-  },
-  noWage: { 
-    fontSize: '12px', 
-    color: '#d1d5db',
-    lineHeight: '1.2', // 减小行高
-    margin: 0,
-    padding: 0,
-  },
-  // 新增：班次样式
-  shiftText: { 
-    fontSize: '12px', 
-    color: '#6b7280', 
-    lineHeight: '1.2', // 减小行高
-    margin: 0, // 移除所有 margin
-    padding: 0,
-  }
-};
 
 export default App;
