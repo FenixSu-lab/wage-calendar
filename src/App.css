@@ -59,6 +59,16 @@
   line-height: 1.05;
 }
 
+.data-warning {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  line-height: 1.6;
+  font-size: 0.95rem;
+}
+
 .month-toolbar {
   width: min(100%, 960px);
   margin: 16px auto;
@@ -132,6 +142,11 @@
   border-color: #c9defb;
 }
 
+.calendar-cell-conflict {
+  background: linear-gradient(180deg, #fff8f6 0%, #fff2ee 100%);
+  border-color: #ffcabb;
+}
+
 .calendar-cell-empty {
   min-height: 104px;
   background: transparent;
@@ -156,6 +171,17 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.calendar-conflict-tag {
+  max-width: 100%;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #ffe7df;
+  color: #b4472b;
+  font-size: 0.8rem;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .calendar-wage {
@@ -258,6 +284,15 @@
 .week-item-wage {
   background: #e6f8ef;
   color: #0f8a63;
+}
+
+.week-item-conflict {
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 0.84rem;
+  font-weight: 700;
+  background: #ffe7df;
+  color: #b4472b;
 }
 
 @media (max-width: 767px) {

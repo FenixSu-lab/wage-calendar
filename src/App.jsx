@@ -31,6 +31,12 @@ const normalizeDateKey = (dateValue) => {
   return `${match[1]}-${normalizedMonth}-${normalizedDay}`;
 };
 
+const formatDateLabel = (dateKey) => {
+  const match = String(dateKey).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return dateKey;
+  return `${Number(match[2])}月${Number(match[3])}日`;
+};
+
 const getQueryParam = (key) => {
   const params = new URLSearchParams(window.location.search);
   const v = params.get(key);
@@ -80,13 +86,13 @@ function App() {
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth(); 
 
-  const { daysArray, monthlyTotal, mobileWeeks } = useMemo(() => {
+  const { daysArray, monthlyTotal, mobileWeeks, duplicateConflictDates } = useMemo(() => {
     const daysInMonth = getDaysInMonth(year, month);
     const firstDay = getFirstDayOfMonth(year, month);
     
     const wageCentsMap = {};
     const shiftMap = {}; // 新增：记录班次
-    const seenDateWageKeys = new Set();
+    const recordsByDate = {};
     
     data.records.forEach(item => {
       const normalizedDateKey = normalizeDateKey(item.date);
@@ -96,16 +102,31 @@ function App() {
       const parsedWage = rawWage == null ? 0 : Number(rawWage);
       const wage = Number.isFinite(parsedWage) ? parsedWage : 0;
       const wageCents = Math.round(wage * 100);
-      const dedupeKey = `${normalizedDateKey}|${wageCents}`;
+      const shift = String(item.shift_type ?? item.shift ?? '').trim();
 
-      if (seenDateWageKeys.has(dedupeKey)) return;
-      seenDateWageKeys.add(dedupeKey);
-
-      wageCentsMap[normalizedDateKey] = (wageCentsMap[normalizedDateKey] || 0) + wageCents;
-      if (!shiftMap[normalizedDateKey]) {
-        shiftMap[normalizedDateKey] = item.shift_type ?? item.shift ?? ''; // 保存班次（可能为早班/晚班/中班等）
+      if (!recordsByDate[normalizedDateKey]) {
+        recordsByDate[normalizedDateKey] = [];
       }
+      recordsByDate[normalizedDateKey].push({ wageCents, shift });
     });
+
+    const duplicateConflictDates = [];
+    Object.entries(recordsByDate).forEach(([dateKey, entries]) => {
+      const uniqueKeys = new Set(entries.map(entry => `${entry.wageCents}|${entry.shift}`));
+
+      if (uniqueKeys.size > 1) {
+        duplicateConflictDates.push(dateKey);
+        return;
+      }
+
+      // 同一天若记录完全相同，只保留一条，不做累加。
+      const [firstEntry] = entries;
+      wageCentsMap[dateKey] = firstEntry.wageCents;
+      shiftMap[dateKey] = firstEntry.shift;
+    });
+
+    duplicateConflictDates.sort();
+    const conflictDateSet = new Set(duplicateConflictDates);
 
     const blanks = Array(firstDay).fill(null);
     let totalCents = 0;
@@ -113,13 +134,18 @@ function App() {
       const day = i + 1;
       const dateKey = formatDateKey(year, month, day);
       const dailyWageCents = wageCentsMap[dateKey] || 0;
-      totalCents += dailyWageCents;
+      const isConflict = conflictDateSet.has(dateKey);
+
+      if (!isConflict) {
+        totalCents += dailyWageCents;
+      }
 
       return {
         day,
         dateKey,
-        wage: dailyWageCents / 100,
-        shift: shiftMap[dateKey] || '' // 带上班次
+        wage: isConflict ? null : dailyWageCents / 100,
+        shift: isConflict ? '' : (shiftMap[dateKey] || ''),
+        isConflict,
       };
     });
 
@@ -148,6 +174,7 @@ function App() {
       daysArray: paddedDays,
       monthlyTotal: totalCents / 100,
       mobileWeeks: weeks,
+      duplicateConflictDates,
     };
   }, [year, month, data.records]);
 
@@ -166,7 +193,7 @@ function App() {
       <div className="summary-card">
         <h1 className="summary-user">{data.userName} 的工资单</h1>
         <div className="summary-total">
-          <span className="summary-label">{year}年{month + 1}月 总收入</span>
+          <span className="summary-label">{year}年{month + 1}月 总收入（已排除待核对日期）</span>
           <span className="summary-amount">¥ {monthlyTotal.toLocaleString()}</span>
         </div>
       </div>
@@ -188,10 +215,11 @@ function App() {
           {daysArray.map((item, index) => {
             if (!item) return <div key={`blank-${index}`} className="calendar-cell calendar-cell-empty" />;
 
-            const hasWage = item.wage > 0;
+            const hasWage = typeof item.wage === 'number' && item.wage > 0;
             return (
-              <article key={item.day} className={`calendar-cell ${hasWage ? 'calendar-cell-active' : ''}`}>
+              <article key={item.day} className={`calendar-cell ${hasWage ? 'calendar-cell-active' : ''} ${item.isConflict ? 'calendar-cell-conflict' : ''}`}>
                 <div className="calendar-date">{item.day}</div>
+                {item.isConflict ? <div className="calendar-conflict-tag">待财务核对</div> : null}
                 {item.shift ? <div className="calendar-shift">{item.shift}</div> : null}
                 {hasWage ? (
                   <div className="calendar-wage">+{item.wage.toLocaleString()}</div>
@@ -211,7 +239,7 @@ function App() {
               <div className="week-card-title">第 {weekIndex + 1} 周</div>
               <div className="week-list">
                 {visibleDays.map((item) => {
-                  const hasWage = item.wage > 0;
+                  const hasWage = typeof item.wage === 'number' && item.wage > 0;
 
                   return (
                     <article key={item.dateKey} className="week-item">
@@ -220,8 +248,14 @@ function App() {
                         <span className="week-item-weekday">周{item.weekDayLabel}</span>
                       </div>
                       <div className="week-item-main">
-                        {item.shift ? <span className="week-item-shift">{item.shift}</span> : <span className="week-item-shift week-item-shift-muted">未排班次</span>}
-                        {hasWage ? <span className="week-item-wage">¥ {item.wage.toLocaleString()}</span> : null}
+                        {item.isConflict ? (
+                          <span className="week-item-conflict">待财务核对</span>
+                        ) : (
+                          <>
+                            {item.shift ? <span className="week-item-shift">{item.shift}</span> : <span className="week-item-shift week-item-shift-muted">未排班次</span>}
+                            {hasWage ? <span className="week-item-wage">¥ {item.wage.toLocaleString()}</span> : null}
+                          </>
+                        )}
                       </div>
                     </article>
                   );

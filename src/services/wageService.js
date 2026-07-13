@@ -28,7 +28,8 @@ export const fetchWages = async (userName) => {
   //   }, 500);
   // });
   try {
-    const response = await fetch(`http://115.236.44.18:7777/api/worker_salary/query_salarys?userName=${encodeURIComponent(userName)}`);
+    // const response = await fetch(`http://115.236.44.18:7778/api/worker_salary/query_salarys?userName=${encodeURIComponent(userName)}`);
+    const response = await fetch(`http://192.168.1.14:7778/api/worker_salary/query_salarys?userName=${encodeURIComponent(userName)}`);
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
